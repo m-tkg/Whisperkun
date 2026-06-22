@@ -113,7 +113,14 @@ final class HotkeyService {
     }
 }
 
-/// `CGEventTap` のコールバック。メインのランループ上で呼ばれる。
+/// `CGEventTap` のコールバック。メインスレッド上の CFRunLoop から呼ばれる。
+///
+/// この CFRunLoop コールバック文脈で `MainActor.assumeIsolated` を直接呼ぶと、
+/// Swift コンカレンシの executor 判定（`swift_task_isCurrentExecutor`）が
+/// 成立せず EXC_BAD_ACCESS でクラッシュする（macOS 26 / Swift 6）。
+/// `DispatchQueue.main.async` でメインキュー文脈に乗せてから isolation を確定する。
+/// 非Sendableな `HotkeyService` をクロージャへ捕捉しないよう、Sendable な
+/// `refcon` ポインタを渡して内部で復元する。
 private func hotkeyEventCallback(
     proxy: CGEventTapProxy,
     type: CGEventType,
@@ -123,10 +130,15 @@ private func hotkeyEventCallback(
     // タップが無効化された場合（タイムアウト等）は再有効化する。
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
         if let refcon {
-            let service = Unmanaged<HotkeyService>.fromOpaque(refcon).takeUnretainedValue()
-            MainActor.assumeIsolated {
-                if let tap = service.eventTapForReenable {
-                    CGEvent.tapEnable(tap: tap, enable: true)
+            // 生ポインタは region isolation を跨げないため UInt(bitPattern:) で渡す。
+            let address = UInt(bitPattern: refcon)
+            DispatchQueue.main.async {
+                guard let pointer = UnsafeMutableRawPointer(bitPattern: address) else { return }
+                let service = Unmanaged<HotkeyService>.fromOpaque(pointer).takeUnretainedValue()
+                MainActor.assumeIsolated {
+                    if let tap = service.eventTapForReenable {
+                        CGEvent.tapEnable(tap: tap, enable: true)
+                    }
                 }
             }
         }
@@ -134,10 +146,14 @@ private func hotkeyEventCallback(
     }
 
     if type == .flagsChanged, let refcon {
-        let service = Unmanaged<HotkeyService>.fromOpaque(refcon).takeUnretainedValue()
         let flags = event.flags.rawValue
-        MainActor.assumeIsolated {
-            service.handleFlagsChanged(flags)
+        let address = UInt(bitPattern: refcon)
+        DispatchQueue.main.async {
+            guard let pointer = UnsafeMutableRawPointer(bitPattern: address) else { return }
+            let service = Unmanaged<HotkeyService>.fromOpaque(pointer).takeUnretainedValue()
+            MainActor.assumeIsolated {
+                service.handleFlagsChanged(flags)
+            }
         }
     }
     return Unmanaged.passUnretained(event)
