@@ -81,21 +81,21 @@ final class DictationCoordinator {
     var hotkeyInstalled: Bool { hotkey.isInstalled }
     var isRecording: Bool { transcription.isRunning }
 
-    /// ホットキーの方式と修飾キーを反映する。`modifier` が nil なら監視を停止する。
+    /// ホットキーの方式と修飾キーを反映する。`modifiers` が空なら監視を停止する。
     /// （設定がある場合の監視開始は権限を知る AppState 側で行う。）
-    func applyHotkeySettings(mode: HotkeyMode, modifier: HotkeyModifier?) {
+    func applyHotkeySettings(mode: HotkeyMode, modifiers: Set<HotkeyModifier>) {
         hotkey.mode = mode
-        hotkey.modifier = modifier
-        if modifier == nil {
+        hotkey.modifiers = modifiers
+        if modifiers.isEmpty {
             hotkey.uninstall()
         }
     }
 
     /// ホットキーが設定済みか（修飾キーが割り当てられているか）。
-    var hotkeyConfigured: Bool { hotkey.modifier != nil }
+    var hotkeyConfigured: Bool { !hotkey.modifiers.isEmpty }
 
-    /// 現在割り当てられている修飾キー（未設定なら nil）。
-    var hotkeyModifier: HotkeyModifier? { hotkey.modifier }
+    /// 現在割り当てられている修飾キーの組み合わせ（未設定なら空）。
+    var hotkeyModifiers: Set<HotkeyModifier> { hotkey.modifiers }
 
     /// 手動トグル（メニューバーから / ホットキーのトグル方式と等価）。
     func toggle() {
@@ -156,9 +156,11 @@ final class DictationCoordinator {
         // 1. 辞書で用語を補正（AIに正しい語を見せるため整形より前）。
         result = dictionary.apply(result, rules: dictionaryRules)
 
-        // 2. AI整形（ワークフロー固有プロンプトがあれば使用）。
+        // 2. AI整形（ワークフロー固有プロンプトがあれば使用）。整形中は HUD にスピナーを表示。
         if aiFormattingEnabled {
+            hud.state.isFormatting = true
             result = await ai.format(result, instructions: activeWorkflow?.instructions)
+            hud.state.isFormatting = false
         }
 
         // 3. スニペット/プレースホルダ展開。
