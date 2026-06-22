@@ -32,6 +32,28 @@ enum HotkeyModifier: String, CaseIterable, Codable {
         case .rightShift: return "右 Shift"
         }
     }
+
+    /// 記号表記（レコーダ表示用）。
+    var symbol: String {
+        switch self {
+        case .rightCommand: return "⌘"
+        case .rightOption: return "⌥"
+        case .rightControl: return "⌃"
+        case .rightShift: return "⇧"
+        }
+    }
+
+    /// `flagsChanged` イベントの仮想キーコードから右側修飾キーを判定する。
+    /// 左側のキーや非修飾キーは nil。
+    init?(keyCode: UInt16) {
+        switch keyCode {
+        case 54: self = .rightCommand
+        case 61: self = .rightOption
+        case 62: self = .rightControl
+        case 60: self = .rightShift
+        default: return nil
+        }
+    }
 }
 
 /// グローバルな修飾キーを監視してディクテーションを起動する。
@@ -41,7 +63,8 @@ enum HotkeyModifier: String, CaseIterable, Codable {
 @MainActor
 final class HotkeyService {
     var mode: HotkeyMode = .pushToTalk
-    var modifier: HotkeyModifier = .rightCommand
+    /// 監視する修飾キー。`nil` は未設定（ホットキー無効）。
+    var modifier: HotkeyModifier?
 
     /// PTTで押下開始 / トグルで開始したいとき。
     var onStart: (() -> Void)?
@@ -56,8 +79,10 @@ final class HotkeyService {
     var isInstalled: Bool { eventTap != nil }
 
     /// イベントタップを開始する。アクセシビリティ未許可だと nil が返り失敗する。
+    /// 修飾キーが未設定（nil）の場合は監視せず false を返す。
     @discardableResult
     func install() -> Bool {
+        guard modifier != nil else { return false }
         guard eventTap == nil else { return true }
 
         let mask = CGEventMask(1 << CGEventType.flagsChanged.rawValue)
@@ -96,6 +121,7 @@ final class HotkeyService {
 
     /// C コールバックから呼ばれる。修飾キーの状態変化を解釈してハンドラを発火する。
     fileprivate func handleFlagsChanged(_ flags: UInt64) {
+        guard let modifier else { return }
         let isDown = (flags & modifier.deviceMask) != 0
         guard isDown != modifierIsDown else { return }
         modifierIsDown = isDown
