@@ -40,6 +40,10 @@ final class TranscriptionService {
     /// 確定済みテキスト（isFinal の結果を連結したもの）。
     private var finalizedText = AttributedString()
 
+    /// セッションの世代。beginSession で進め、stop でも進める。
+    /// 進行中の runSession は自分の世代と一致しなくなったら中断して .listening へ遷移しない。
+    private var generation = 0
+
     init(locale: Locale = Locale(identifier: "ja-JP")) {
         self.locale = locale
     }
@@ -50,17 +54,20 @@ final class TranscriptionService {
         return false
     }
 
-    /// 録音と文字起こしを開始する。
-    func start() async {
-        // 既に動作中（preparing/listening）なら何もしない。idle/failed からは開始する。
-        switch phase {
-        case .preparing, .listening: return
-        case .idle, .failed: break
-        }
+    /// セッションを同期的に開始する。世代を進め `.preparing` にし、その世代を返す。
+    /// 実際の非同期セットアップは `runSession(generation:)` で行う。
+    @discardableResult
+    func beginSession() -> Int {
+        generation += 1
         phase = .preparing
         liveText = ""
         finalizedText = AttributedString()
+        return generation
+    }
 
+    /// `beginSession` で得た世代でセットアップを行う。途中で世代が変わっていたら
+    /// （stop / 新しい beginSession が走ったら）中断し、`.listening` へは遷移しない。
+    func runSession(generation gen: Int) async {
         do {
             let transcriber = SpeechTranscriber(
                 locale: locale,
@@ -74,11 +81,14 @@ final class TranscriptionService {
             if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
                 try await request.downloadAndInstall()
             }
+            guard generation == gen else { return }  // 既に停止/再開された
 
             // 解析器が要求する最適フォーマットを取得し、その形式へ変換する。
             guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
                 throw TranscriptionError.audioFormatUnavailable
             }
+            guard generation == gen else { return }
+
             let bufferConverter = BufferConverter(outputFormat: analyzerFormat)
             let (inputStream, continuation) = AsyncStream.makeStream(of: AnalyzerInput.self)
 
@@ -95,6 +105,12 @@ final class TranscriptionService {
             }
 
             try await analyzer.start(inputSequence: inputStream)
+            // ここから .listening 確定までは同期処理のみ（await を挟まない）＝世代チェックと原子的。
+            guard generation == gen else {
+                engine.inputNode.removeTap(onBus: 0)
+                continuation.finish()
+                return
+            }
             engine.prepare()
             try engine.start()
 
@@ -116,14 +132,19 @@ final class TranscriptionService {
 
             phase = .listening
         } catch {
-            cleanup()
-            phase = .failed(error.localizedDescription)
+            // 自分の世代のときだけ失敗を反映（古い世代なら stop 側が状態を持つ）。
+            if generation == gen {
+                cleanup()
+                phase = .failed(error.localizedDescription)
+            }
         }
     }
 
     /// 録音を停止し、確定テキストを返す。
     @discardableResult
     func stop() async -> String {
+        // 進行中の runSession を無効化する（preparing 中でも .listening 化を止める）。
+        generation += 1
         guard isRunning else { return String(finalizedText.characters) }
 
         engine.inputNode.removeTap(onBus: 0)
