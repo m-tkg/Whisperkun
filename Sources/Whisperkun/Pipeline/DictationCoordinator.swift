@@ -44,9 +44,6 @@ final class DictationCoordinator {
     /// transcription.phase は非同期に更新されるため、それに依存せずここで管理する。
     private var isActive = false
 
-    /// 開始処理（transcription.start）のタスク。停止時に完了を待ち合わせて競合を防ぐ。
-    private var startTask: Task<Void, Never>?
-
     /// 確定テキストの挿入中など、停止処理が進行中かどうか。
     private(set) var isFinishing = false
 
@@ -69,14 +66,14 @@ final class DictationCoordinator {
     }
 
     /// HUD の中止ボタンから呼ぶ。録音を強制停止し、確定テキストは破棄して状態をリセットする。
+    /// preparing 中でも止められるよう、開始処理の完了を待たずに stop する
+    /// （stop が世代を進めて進行中の開始処理を無効化するため、.listening への遷移は起きない）。
     func cancel() {
         isActive = false
+        isFinishing = false
         Task {
-            // 開始処理の完了を待ってから停止（end と同様に競合を避ける）。確定テキストは挿入しない。
-            await startTask?.value
             _ = await transcription.stop()
             hud.hide()
-            isFinishing = false
         }
     }
 
@@ -140,7 +137,9 @@ final class DictationCoordinator {
         }
 
         hud.show(transcription)
-        startTask = Task { await transcription.start() }
+        // セッションの世代を同期的に確定してから非同期セットアップを走らせる。
+        let generation = transcription.beginSession()
+        Task { await transcription.runSession(generation: generation) }
     }
 
     private func end() {
@@ -148,9 +147,8 @@ final class DictationCoordinator {
         isActive = false
         isFinishing = true
         Task {
-            // 開始処理の完了を待ってから停止する。これをしないと、短い発話で
-            // stop() の後に start() のセットアップが完了し、.listening に戻って固着する。
-            await startTask?.value
+            // 開始処理の完了は待たない。stop が世代を進めて進行中の開始処理を無効化するため、
+            // preparing 中に止めても .listening へ遷移して固着することはない。
             let text = await transcription.stop()
             let processed = await process(text)
             hud.hide()

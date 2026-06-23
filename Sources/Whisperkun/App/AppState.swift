@@ -127,7 +127,7 @@ final class AppState {
         alert.addButton(withTitle: String(localized: "リリースページを開く"))
         alert.addButton(withTitle: String(localized: "キャンセル"))
 
-        switch alert.runModal() {
+        switch runAlertModal(alert) {
         case .alertFirstButtonReturn:
             performUpdate(release)
         case .alertSecondButtonReturn:
@@ -155,7 +155,17 @@ final class AppState {
         alert.messageText = title
         alert.informativeText = message
         alert.addButton(withTitle: String(localized: "OK"))
-        alert.runModal()
+        runAlertModal(alert)
+    }
+
+    /// アラートを確実に見える状態で表示する。メニューバー常駐(accessory)アプリでは
+    /// アプリが前面化されないと runModal がアラート不可視のまま固まるため、
+    /// 前面化＋アラートを最前面レベルにしてから実行する。
+    @discardableResult
+    private func runAlertModal(_ alert: NSAlert) -> NSApplication.ModalResponse {
+        NSApp.activate(ignoringOtherApps: true)
+        alert.window.level = .modalPanel
+        return alert.runModal()
     }
 
     /// 同一バンドルIDのインスタンスが既に動いていれば、それを前面化して自プロセスを終了する。
