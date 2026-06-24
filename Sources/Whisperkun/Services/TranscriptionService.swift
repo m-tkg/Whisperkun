@@ -155,9 +155,10 @@ final class TranscriptionService {
         engine.stop()
         inputContinuation?.finish()
 
-        // 末尾まで解析を確定させ結果購読の完了を待つ。ただし Speech 側で稀に確定処理が
-        // 返らず「認識中」のまま固着するため、タイムアウトで打ち切る。
-        let finished = await finishWithTimeout(seconds: 3)
+        // 末尾まで解析を確定させ結果購読の完了を待つ。ただし Speech 側の確定処理は短い発話でも
+        // 一定時間返らないことがあり、その間 phase が .listening のままで「認識中」が居残って見える。
+        // 待ち過ぎを避けるため短い上限で打ち切る（超過分は liveText フォールバックで補うので内容は欠けない）。
+        let finished = await finishWithTimeout(seconds: 1.0)
 
         // 正常確定なら確定テキスト、タイムアウト時は暫定込みの表示テキストで代替する。
         let finalized = String(finalizedText.characters)
