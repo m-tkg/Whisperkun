@@ -35,7 +35,11 @@ final class TranscriptionService {
     /// 文字起こしに使うロケール。
     var locale: Locale
 
-    private let engine = AVAudioEngine()
+    /// 取り込み用エンジン。セッションごとに作り直す（使い回さない）。
+    /// 単一インスタンスを使い回すと、開始/停止サイクルをまたいでリアルタイム状態が
+    /// 持ち越され、停止時に CoreAudio の IO スレッドが解放済み IOProc を呼ぶ競合
+    /// （EXC_BAD_ACCESS）を誘発するため。
+    private var engine: AVAudioEngine?
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
@@ -101,6 +105,9 @@ final class TranscriptionService {
             // クロージャを非隔離にしないと、@MainActor 隔離と推論されオーディオスレッド上で
             // 実行時の隔離アサーション（SIGTRAP）でクラッシュする。捕捉する値はいずれも
             // Sendable（continuation / @unchecked Sendable な bufferConverter）。
+            // セッションごとに新しいエンジンを生成する（使い回しによるリアルタイム状態の
+            // 持ち越し＝停止時の IO スレッド競合を断つ）。コミットするまで self には載せない。
+            let engine = AVAudioEngine()
             let recordingFormat = engine.inputNode.outputFormat(forBus: 0)
             engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { @Sendable buffer, _ in
                 if let converted = try? bufferConverter.convert(buffer) {
@@ -118,6 +125,7 @@ final class TranscriptionService {
             engine.prepare()
             try engine.start()
 
+            self.engine = engine
             self.transcriber = transcriber
             self.analyzer = analyzer
             self.inputContinuation = continuation
@@ -151,8 +159,11 @@ final class TranscriptionService {
         generation += 1
         guard isRunning else { return String(finalizedText.characters) }
 
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        // IO スレッドを先に静止させてから tap を外す。リアルタイムスレッド稼働中に
+        // tap を解放すると、CoreAudio の IO スレッドが解放済み IOProc を呼んで
+        // クラッシュ（EXC_BAD_ACCESS at 0x0）することがあるため、順序が重要。
+        engine?.stop()
+        engine?.inputNode.removeTap(onBus: 0)
         inputContinuation?.finish()
 
         // 末尾まで解析を確定させ結果購読の完了を待つ。ただし Speech 側の確定処理は短い発話でも
@@ -206,5 +217,6 @@ final class TranscriptionService {
         inputContinuation = nil
         analyzer = nil
         transcriber = nil
+        engine = nil
     }
 }
