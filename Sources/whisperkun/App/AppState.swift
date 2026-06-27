@@ -20,6 +20,15 @@ final class AppState {
     private(set) var availableRelease: ReleaseInfo?
     /// アップデート確認/インストールが進行中か。
     private(set) var isUpdating = false
+    /// 新版の有無が変わったときに呼ぶ（引数: 新版あり=true）。メニューバーの赤バッジ同期に使う。
+    @ObservationIgnored var onUpdateAvailabilityChanged: ((Bool) -> Void)?
+    /// 定期サイレントチェック用タイマー。
+    @ObservationIgnored private var updateCheckTimer: Timer?
+    /// スリープ復帰通知の購読トークン。
+    @ObservationIgnored private var wakeObserver: NSObjectProtocol?
+
+    /// 定期チェック間隔（秒）。未認証 GitHub API のレート制限 60回/時に十分収まる 1 時間。
+    private static let updateCheckInterval: TimeInterval = 60 * 60
 
     /// 文字起こしサービスへの参照（UIのライブ表示用）。
     var transcription: TranscriptionService { dictation.transcription }
@@ -54,8 +63,10 @@ final class AppState {
             onboarding.showIfNeeded(self)
         }
 
-        // 起動時にサイレントでアップデートを確認（結果はメニューに反映）。
+        // 起動時にサイレントでアップデートを確認（結果はメニュー/バッジに反映）。
         startUpdateCheck(interactive: false)
+        // 起動後も定期＋スリープ復帰でサイレントチェックする。
+        scheduleUpdateChecks()
     }
 
     /// メニューからオンボーディングを再表示する。
@@ -93,6 +104,36 @@ final class AppState {
         startUpdateCheck(interactive: true)
     }
 
+    /// 新版の有無を一元管理する（base の setUpdateAvailable/clearUpdateAvailable 相当）。
+    /// availableRelease 更新とバッジ/メニュー同期通知をここに集約し、全チェック経路から必ず通す。
+    private func setAvailableRelease(_ release: ReleaseInfo?) {
+        availableRelease = release
+        onUpdateAvailabilityChanged?(release != nil)
+    }
+
+    /// 定期サイレントチェック（Timer）とスリープ復帰時チェックを配線する。
+    /// Timer はスリープ中に発火しないため、`didWakeNotification` で復帰時にも即チェックする
+    /// （ノート PC で「閉じている間に新版」に対応）。
+    private func scheduleUpdateChecks() {
+        let timer = Timer.scheduledTimer(withTimeInterval: Self.updateCheckInterval, repeats: true) { [weak self] _ in
+            // Timer のブロックはメインスレッドで呼ばれるが非隔離なので assumeIsolated で @MainActor 文脈に乗せる。
+            MainActor.assumeIsolated {
+                self?.startUpdateCheck(interactive: false)
+            }
+        }
+        // 省電力のためコアレッシングを許可（間隔の 10%）。
+        timer.tolerance = Self.updateCheckInterval * 0.1
+        updateCheckTimer = timer
+
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.startUpdateCheck(interactive: false)
+            }
+        }
+    }
+
     /// 最新リリースを確認する。`interactive` 時は結果（最新/更新あり/エラー）をダイアログ表示する。
     private func startUpdateCheck(interactive: Bool) {
         guard !isUpdating else { return }
@@ -100,10 +141,10 @@ final class AppState {
             do {
                 let release = try await updateService.fetchLatestRelease()
                 if VersionComparator.isNewer(tag: release.tagName, than: UpdateService.currentVersion) {
-                    availableRelease = release
+                    setAvailableRelease(release)
                     if interactive { promptInstall(release) }
                 } else {
-                    availableRelease = nil
+                    setAvailableRelease(nil)
                     if interactive {
                         showAlert(title: String(localized: "最新です"),
                                   message: String(localized: "現在のバージョン \(UpdateService.currentVersion) が最新です。"))
