@@ -14,6 +14,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let menu = NSMenu()
     private var kuntraykunBridge: KuntraykunBridge?
+    /// 新版があるとき右下に出す赤バッジ（更新有無は AppState が集約して同期する）。
+    private var updateBadgeView: NSView?
+
+    /// メニューバーアイコンの一辺（pt）。バッジ位置の基準に使う。
+    private static let iconWidth: CGFloat = 18
+    /// 赤バッジの直径（pt）。
+    private static let badgeSize: CGFloat = 7
 
     /// ローカル検証ビルド（バンドルID が `.local`）かどうか。
     private var isLocalBuild: Bool {
@@ -37,6 +44,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
 
+        // 新版があるとき表示する赤バッジをボタンにオーバーレイし、AppState の更新有無と同期させる。
+        installUpdateBadge()
+        appState.onUpdateAvailabilityChanged = { [weak self] available in
+            self?.updateBadgeView?.isHidden = !available
+        }
+        // 起動時チェックが既に完了している場合に取りこぼさないよう初期同期する。
+        appState.onUpdateAvailabilityChanged?(appState.availableRelease != nil)
+
         // kuntraykun 連携: 管理対象なら自分のアイコンを隠し、showMenu でメニューを出す。
         let bridge = KuntraykunBridge(
             setHidden: { [weak self] hidden in self?.statusItem.isVisible = !hidden },
@@ -44,6 +59,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         bridge.start()
         kuntraykunBridge = bridge
+    }
+
+    /// 赤バッジ view をボタンに重ね、アイコン幅基準で右下に Auto Layout 固定する。
+    /// 位置は trailing 基準ではなく**アイコン画像の幅基準**にすることで、「ローカル」テキスト併記時
+    /// （`imagePosition = .imageLeading`）でも常にアイコングリフの右下に乗る。
+    private func installUpdateBadge() {
+        guard let button = statusItem.button else { return }
+        let badge = UpdateBadgeView(frame: .zero)
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        badge.isHidden = true
+        button.addSubview(badge)
+        NSLayoutConstraint.activate([
+            badge.widthAnchor.constraint(equalToConstant: Self.badgeSize),
+            badge.heightAnchor.constraint(equalToConstant: Self.badgeSize),
+            badge.leadingAnchor.constraint(equalTo: button.leadingAnchor,
+                                           constant: Self.iconWidth - Self.badgeSize),
+            badge.bottomAnchor.constraint(equalTo: button.bottomAnchor),
+        ])
+        updateBadgeView = badge
     }
 
     // MARK: - メニュー（開くたびに再構築し、アップデート文言を最新化する）
