@@ -28,45 +28,52 @@ public struct TranscriptionSession: Sendable, Equatable {
 
     /// 録音・準備が進行中か（`.preparing` / `.listening`）。
     public var isRunning: Bool {
-        fatalError("未実装")
+        phase == .preparing || phase == .listening
     }
 
     /// セッションを開始する。世代を進め `.preparing` にし、その世代を返す。
     public mutating func begin() -> Int {
-        fatalError("未実装")
+        generation += 1
+        phase = .preparing
+        return generation
     }
 
     /// `gen` がまだ現行世代か（違えば進行中のセットアップは中断すべき）。
     public func isCurrent(_ gen: Int) -> Bool {
-        fatalError("未実装")
+        generation == gen
     }
 
     /// 準備完了。`gen` が現行世代なら `.listening` へ遷移して true。古い世代なら何もしない。
     @discardableResult
     public mutating func commitListening(_ gen: Int) -> Bool {
-        fatalError("未実装")
+        guard isCurrent(gen) else { return false }
+        phase = .listening
+        return true
     }
 
     /// `gen` が現行世代なら `.failed` へ遷移して true。古い世代なら何もしない。
     @discardableResult
     public mutating func fail(_ gen: Int, message: String) -> Bool {
-        fatalError("未実装")
+        guard isCurrent(gen) else { return false }
+        phase = .failed(message)
+        return true
     }
 
     /// 世代によらず `.failed` へ遷移する（結果ストリームのエラー用）。
     public mutating func forceFail(message: String) {
-        fatalError("未実装")
+        phase = .failed(message)
     }
 
     /// 停止する。世代を進めて進行中のセットアップを無効化し、
     /// 停止処理（リソース解放・確定待ち）が必要（＝進行中だった）なら true を返す。
     /// phase は停止処理の完了（`finishStop`）まで変えない（「認識中」表示を保つ従来挙動）。
     public mutating func stop() -> Bool {
-        fatalError("未実装")
+        generation += 1
+        return isRunning
     }
 
     /// 停止処理の完了。`.idle` へ戻す。
     public mutating func finishStop() {
-        fatalError("未実装")
+        phase = .idle
     }
 }

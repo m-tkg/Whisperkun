@@ -1,6 +1,7 @@
 import AppKit
 import Observation
 import SwiftUI
+import whisperkunCore
 
 /// HUD 固有の表示状態（録音以外の進行表示）。AI整形中などに使う。
 @MainActor

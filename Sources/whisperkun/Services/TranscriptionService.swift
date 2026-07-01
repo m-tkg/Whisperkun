@@ -11,14 +11,6 @@ enum TranscriptionError: Error {
     case audioFormatUnavailable
 }
 
-/// 文字起こしの実行状態。
-enum TranscriptionPhase: Equatable {
-    case idle
-    case preparing      // モデル/言語アセットの準備中
-    case listening      // 録音・認識中
-    case failed(String)
-}
-
 /// マイク入力を取り込み、Speech framework の `SpeechAnalyzer` + `SpeechTranscriber`
 /// でリアルタイム文字起こしする中核サービス。
 ///
@@ -35,7 +27,7 @@ final class TranscriptionService {
             guard phase != oldValue else { return }
             // phase 遷移の背骨ログ。「認識中」固着時に、どこで遷移が止まったかを
             // Console.app（subsystem:com.mtkg.whisperkun）で時系列に追える。
-            txLog.debug("phase: \(String(describing: oldValue), privacy: .public) -> \(String(describing: self.phase), privacy: .public) gen=\(self.generation, privacy: .public)")
+            txLog.debug("phase: \(String(describing: oldValue), privacy: .public) -> \(String(describing: self.phase), privacy: .public) gen=\(self.session.generation, privacy: .public)")
         }
     }
 
@@ -55,26 +47,29 @@ final class TranscriptionService {
     /// 認識結果（確定/暫定）からのテキスト組み立て（純ロジックは Core 側）。
     private var assembler = TranscriptAssembler()
 
-    /// セッションの世代。beginSession で進め、stop でも進める。
-    /// 進行中の runSession は自分の世代と一致しなくなったら中断して .listening へ遷移しない。
-    private var generation = 0
+    /// 世代（generation）と phase 遷移判断の状態機械（純ロジックは Core 側でテスト済み）。
+    /// beginSession で世代を進め、stop でも進める。進行中の runSession は自分の世代と
+    /// 一致しなくなったら中断して .listening へ遷移しない。
+    /// 遷移のたびに `syncPhase()` で公開プロパティ `phase` へ反映する。
+    private var session = TranscriptionSession()
 
     init(locale: Locale = Locale(identifier: "ja-JP")) {
         self.locale = locale
     }
 
-    var isRunning: Bool {
-        if case .listening = phase { return true }
-        if case .preparing = phase { return true }
-        return false
+    var isRunning: Bool { session.isRunning }
+
+    /// 状態機械の phase を公開プロパティへ反映する（didSet の遷移ログもここで発火する）。
+    private func syncPhase() {
+        phase = session.phase
     }
 
     /// セッションを同期的に開始する。世代を進め `.preparing` にし、その世代を返す。
     /// 実際の非同期セットアップは `runSession(generation:)` で行う。
     @discardableResult
     func beginSession() -> Int {
-        generation += 1
-        phase = .preparing
+        let generation = session.begin()
+        syncPhase()
         liveText = ""
         assembler = TranscriptAssembler()
         return generation
@@ -96,13 +91,13 @@ final class TranscriptionService {
             if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
                 try await request.downloadAndInstall()
             }
-            guard generation == gen else { return }  // 既に停止/再開された
+            guard session.isCurrent(gen) else { return }  // 既に停止/再開された
 
             // 解析器が要求する最適フォーマットを取得し、その形式へ変換する。
             guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
                 throw TranscriptionError.audioFormatUnavailable
             }
-            guard generation == gen else { return }
+            guard session.isCurrent(gen) else { return }
 
             let bufferConverter = BufferConverter(outputFormat: analyzerFormat)
             let (inputStream, continuation) = AsyncStream.makeStream(of: AnalyzerInput.self)
@@ -124,7 +119,7 @@ final class TranscriptionService {
 
             try await analyzer.start(inputSequence: inputStream)
             // ここから .listening 確定までは同期処理のみ（await を挟まない）＝世代チェックと原子的。
-            guard generation == gen else {
+            guard session.isCurrent(gen) else {
                 engine.inputNode.removeTap(onBus: 0)
                 continuation.finish()
                 return
@@ -145,16 +140,19 @@ final class TranscriptionService {
                         self.apply(text: result.text, isFinal: result.isFinal)
                     }
                 } catch {
-                    self.phase = .failed(error.localizedDescription)
+                    // 従来から世代によらず失敗を反映する（結果ストリームのエラー）。
+                    self.session.forceFail(message: error.localizedDescription)
+                    self.syncPhase()
                 }
             }
 
-            phase = .listening
+            session.commitListening(gen)
+            syncPhase()
         } catch {
             // 自分の世代のときだけ失敗を反映（古い世代なら stop 側が状態を持つ）。
-            if generation == gen {
+            if session.fail(gen, message: error.localizedDescription) {
                 cleanup()
-                phase = .failed(error.localizedDescription)
+                syncPhase()
             }
         }
     }
@@ -163,15 +161,16 @@ final class TranscriptionService {
     @discardableResult
     func stop() async -> String {
         // 進行中の runSession を無効化する（preparing 中でも .listening 化を止める）。
-        generation += 1
-        guard isRunning else { return assembler.finalizedText }
+        // stop() は世代を進め、停止処理が必要（＝進行中だった）かを返す。
+        guard session.stop() else { return assembler.finalizedText }
 
         // どの経路で抜けても必ずリソースを解放し phase を idle に戻す（「認識中」固着の保険）。
         // 現状 engine.stop()/removeTap は throws ではないが、将来の早期 return / await
         // キャンセル追加でも復帰を保証するため defer に集約する。
         defer {
             cleanup()
-            phase = .idle
+            session.finishStop()
+            syncPhase()
         }
 
         // IO スレッドを先に静止させてから tap を外す。リアルタイムスレッド稼働中に
