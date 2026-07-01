@@ -44,15 +44,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
 
-        // 新版があるとき表示する赤バッジをボタンにオーバーレイし、AppState の更新有無と同期させる。
+        // 新版があるとき表示する赤バッジをボタンにオーバーレイし、UpdateCoordinator の更新有無と同期させる。
         installUpdateBadge()
-        appState.onUpdateAvailabilityChanged = { [weak self] available in
+        appState.updates.onUpdateAvailabilityChanged = { [weak self] available in
             self?.updateBadgeView?.isHidden = !available
             // kuntraykun にもアップデート有無を伝える（集約バッジ/赤丸用）。
             self?.kuntraykunBridge?.reportUpdate(available)
         }
         // 起動時チェックが既に完了している場合に取りこぼさないよう初期同期する。
-        appState.onUpdateAvailabilityChanged?(appState.availableRelease != nil)
+        appState.updates.onUpdateAvailabilityChanged?(appState.updates.availableRelease != nil)
 
         // kuntraykun 連携: 管理対象なら自分のアイコンを隠し、showMenu でメニューを出す。
         let bridge = KuntraykunBridge(
@@ -62,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         bridge.start()
         kuntraykunBridge = bridge
         // bridge 生成前に確定していた更新状態を改めて報告する。
-        bridge.reportUpdate(appState.availableRelease != nil)
+        bridge.reportUpdate(appState.updates.availableRelease != nil)
     }
 
     /// 再アクティブ化時にアイコンを貼り直す。万一フォールバック（mic.fill）になっていても、
@@ -122,7 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let updateItem = NSMenuItem(title: updateTitle, action: #selector(checkForUpdates), keyEquivalent: "")
         updateItem.target = self
-        updateItem.isEnabled = !appState.isUpdating
+        updateItem.isEnabled = !appState.updates.isUpdating
         menu.addItem(updateItem)
         menu.addItem(.separator())
 
@@ -133,7 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 新バージョンがあればインストール、なければ確認のラベル。
     private var updateTitle: String {
-        if let release = appState.availableRelease {
+        if let release = appState.updates.availableRelease {
             return String(localized: "アップデート \(release.tagName) をインストール…")
         }
         return String(localized: "アップデートを確認")
@@ -149,7 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func checkForUpdates() {
-        appState.checkForUpdates()
+        appState.updates.checkForUpdates()
     }
 
     @objc private func quit() {
