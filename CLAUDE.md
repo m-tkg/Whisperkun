@@ -53,13 +53,13 @@ base 必須チェックリストの実装対応（実装済み）:
 - **自己更新**: `UpdateService`（公開 GitHub API を ephemeral セッションで取得）＋ `SelfUpdater`
   （zip を `ditto` 展開 → **基底ID（`.local` 除去）で bundle ID 検証** → 切り離しスクリプトで入替・再起動）。
   基底ID比較によりローカルビルドからも本番リリースへ更新できる。
-- **定期監視＋スリープ復帰チェック**: `AppState.scheduleUpdateChecks()`（init で配線）が起動時1回に加え
+- **定期監視＋スリープ復帰チェック**: `UpdateCoordinator`（`AppState.updates`。init の `start()` で配線）が起動時1回に加え
   `Timer.scheduledTimer`（間隔 **1時間**・`tolerance` 10%）で定期サイレントチェックし、`Timer` がスリープ中に
   発火しないため `NSWorkspace.didWakeNotification` で**復帰時にも即チェック**する。間隔は未認証 GitHub API の
   レート制限 **60回/時** に十分収まる値。タイマー/通知ブロックは非隔離なので `MainActor.assumeIsolated` で
   `startUpdateCheck(interactive:)` を呼ぶ。
 - **メニューバーの赤バッジ**: 新版があるとアイコン右下に赤丸（最新なら消す）。更新有無は
-  `AppState.setAvailableRelease(_:)`（base の `setUpdateAvailable`/`clearUpdateAvailable` 相当）に**集約**し、
+  `UpdateCoordinator.setAvailableRelease(_:)`（base の `setUpdateAvailable`/`clearUpdateAvailable` 相当）に**集約**し、
   `onUpdateAvailabilityChanged` クロージャで `AppDelegate` のバッジと同期する（起動時・定期・復帰・手動の全経路が
   ここを通る）。バッジは `UI/UpdateBadgeView`（`NSView`+`CALayer` の赤丸・白縁取り）を `statusItem.button` に
   オーバーレイし、**アイコン幅基準で右下に Auto Layout 固定**（`leading = button.leading + (iconWidth - badgeSize)`、

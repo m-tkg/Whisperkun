@@ -10,32 +10,17 @@ final class AppState {
     let permissions = PermissionsManager()
     let dictation = DictationCoordinator()
     let settings = SettingsStore()
+    /// アップデート統括（起動時/定期/復帰チェック・インストール）。
+    let updates = UpdateCoordinator()
     let modelContainer: ModelContainer
     private let onboarding = OnboardingController()
-
-    // MARK: - アップデート
-    @ObservationIgnored private let updateService = UpdateService()
-    @ObservationIgnored private lazy var selfUpdater = SelfUpdater(service: updateService)
-    /// 利用可能な新バージョン（無ければ nil）。メニュー表示に使う。
-    private(set) var availableRelease: ReleaseInfo?
-    /// アップデート確認/インストールが進行中か。
-    private(set) var isUpdating = false
-    /// 新版の有無が変わったときに呼ぶ（引数: 新版あり=true）。メニューバーの赤バッジ同期に使う。
-    @ObservationIgnored var onUpdateAvailabilityChanged: ((Bool) -> Void)?
-    /// 定期サイレントチェック用タイマー。
-    @ObservationIgnored private var updateCheckTimer: Timer?
-    /// スリープ復帰通知の購読トークン。
-    @ObservationIgnored private var wakeObserver: NSObjectProtocol?
-
-    /// 定期チェック間隔（秒）。未認証 GitHub API のレート制限 60回/時に十分収まる 1 時間。
-    private static let updateCheckInterval: TimeInterval = 60 * 60
 
     /// 文字起こしサービスへの参照（UIのライブ表示用）。
     var transcription: TranscriptionService { dictation.transcription }
 
     init() {
         // 多重起動防止: 同一バンドルIDの既存インスタンスがあれば前面化して自分は終了する。
-        Self.terminateIfAlreadyRunning()
+        AppLaunchGuard.terminateIfAlreadyRunning()
 
         do {
             modelContainer = try ModelContainer(
@@ -63,10 +48,8 @@ final class AppState {
             onboarding.showIfNeeded(self)
         }
 
-        // 起動時にサイレントでアップデートを確認（結果はメニュー/バッジに反映）。
-        startUpdateCheck(interactive: false)
-        // 起動後も定期＋スリープ復帰でサイレントチェックする。
-        scheduleUpdateChecks()
+        // 起動時サイレントチェック＋定期/スリープ復帰チェックを開始。
+        updates.start()
     }
 
     /// メニューからオンボーディングを再表示する。
@@ -91,129 +74,6 @@ final class AppState {
         if permissions.accessibilityGranted {
             dictation.installHotkey()
         }
-    }
-
-    // MARK: - アップデート
-
-    /// メニューの「アップデートを確認」から呼ぶ（結果をダイアログ表示）。
-    func checkForUpdates() {
-        startUpdateCheck(interactive: true)
-    }
-
-    /// 新版の有無を一元管理する（base の setUpdateAvailable/clearUpdateAvailable 相当）。
-    /// availableRelease 更新とバッジ/メニュー同期通知をここに集約し、全チェック経路から必ず通す。
-    private func setAvailableRelease(_ release: ReleaseInfo?) {
-        availableRelease = release
-        onUpdateAvailabilityChanged?(release != nil)
-    }
-
-    /// 定期サイレントチェック（Timer）とスリープ復帰時チェックを配線する。
-    /// Timer はスリープ中に発火しないため、`didWakeNotification` で復帰時にも即チェックする
-    /// （ノート PC で「閉じている間に新版」に対応）。
-    private func scheduleUpdateChecks() {
-        let timer = Timer.scheduledTimer(withTimeInterval: Self.updateCheckInterval, repeats: true) { [weak self] _ in
-            // Timer のブロックはメインスレッドで呼ばれるが非隔離なので assumeIsolated で @MainActor 文脈に乗せる。
-            MainActor.assumeIsolated {
-                self?.startUpdateCheck(interactive: false)
-            }
-        }
-        // 省電力のためコアレッシングを許可（間隔の 10%）。
-        timer.tolerance = Self.updateCheckInterval * 0.1
-        updateCheckTimer = timer
-
-        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.startUpdateCheck(interactive: false)
-            }
-        }
-    }
-
-    /// 最新リリースを確認する。`interactive` 時は結果（最新/更新あり/エラー）をダイアログ表示する。
-    private func startUpdateCheck(interactive: Bool) {
-        guard !isUpdating else { return }
-        Task { @MainActor in
-            do {
-                let release = try await updateService.fetchLatestRelease()
-                if VersionComparator.isNewer(tag: release.tagName, than: AppInfo.version) {
-                    setAvailableRelease(release)
-                    if interactive { promptInstall(release) }
-                } else {
-                    setAvailableRelease(nil)
-                    if interactive {
-                        showAlert(title: String(localized: "最新です"),
-                                  message: String(localized: "現在のバージョン \(AppInfo.version) が最新です。"))
-                    }
-                }
-            } catch {
-                if interactive {
-                    showAlert(title: String(localized: "アップデートの確認に失敗しました"),
-                              message: error.localizedDescription)
-                }
-            }
-        }
-    }
-
-    /// 更新インストールの確認ダイアログを表示し、承認されたら入れ替えを実行する。
-    private func promptInstall(_ release: ReleaseInfo) {
-        let alert = NSAlert()
-        alert.messageText = String(localized: "新しいバージョン \(release.tagName) があります")
-        alert.informativeText = String(localized: "現在のバージョン: \(AppInfo.version)\nインストールするとアプリを再起動します。")
-        alert.addButton(withTitle: String(localized: "更新"))
-        alert.addButton(withTitle: String(localized: "リリースページを開く"))
-        alert.addButton(withTitle: String(localized: "キャンセル"))
-
-        switch runAlertModal(alert) {
-        case .alertFirstButtonReturn:
-            performUpdate(release)
-        case .alertSecondButtonReturn:
-            if let url = URL(string: release.htmlUrl) { NSWorkspace.shared.open(url) }
-        default:
-            break
-        }
-    }
-
-    private func performUpdate(_ release: ReleaseInfo) {
-        isUpdating = true
-        Task { @MainActor in
-            do {
-                // 成功すると selfUpdater 内でアプリが終了するため戻らない。
-                try await selfUpdater.performUpdate(to: release)
-            } catch {
-                isUpdating = false
-                showAlert(title: String(localized: "アップデートに失敗しました"), message: error.localizedDescription)
-            }
-        }
-    }
-
-    private func showAlert(title: String, message: String) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: String(localized: "OK"))
-        runAlertModal(alert)
-    }
-
-    /// アラートを確実に見える状態で表示する。メニューバー常駐(accessory)アプリでは
-    /// アプリが前面化されないと runModal がアラート不可視のまま固まるため、
-    /// 前面化＋アラートを最前面レベルにしてから実行する。
-    @discardableResult
-    private func runAlertModal(_ alert: NSAlert) -> NSApplication.ModalResponse {
-        NSApp.activate(ignoringOtherApps: true)
-        alert.window.level = .modalPanel
-        return alert.runModal()
-    }
-
-    /// 同一バンドルIDのインスタンスが既に動いていれば、それを前面化して自プロセスを終了する。
-    private static func terminateIfAlreadyRunning() {
-        guard let bundleID = Bundle.main.bundleIdentifier else { return }
-        let others = NSRunningApplication
-            .runningApplications(withBundleIdentifier: bundleID)
-            .filter { $0 != NSRunningApplication.current }
-        guard let existing = others.first else { return }
-        existing.activate(options: [.activateAllWindows])
-        exit(0)
     }
 
     // MARK: - SwiftData ブリッジ

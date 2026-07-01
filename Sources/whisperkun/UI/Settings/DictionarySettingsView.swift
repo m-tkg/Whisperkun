@@ -126,10 +126,7 @@ struct DictionarySettingsView: View {
     }
 
     private func showImportError() {
-        let alert = NSAlert()
-        alert.messageText = String(localized: "インポートに失敗しました")
-        alert.informativeText = String(localized: "ファイルの読み込みまたは解析に失敗しました。")
-        alert.addButton(withTitle: String(localized: "OK"))
-        alert.runModal()
+        AppAlert.show(title: String(localized: "インポートに失敗しました"),
+                      message: String(localized: "ファイルの読み込みまたは解析に失敗しました。"))
     }
 }
