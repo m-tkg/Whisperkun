@@ -30,7 +30,14 @@ enum TranscriptionPhase: Equatable {
 final class TranscriptionService {
     /// 確定済み＋暫定の表示用テキスト。HUDのライブ表示に使う。
     private(set) var liveText: String = ""
-    private(set) var phase: TranscriptionPhase = .idle
+    private(set) var phase: TranscriptionPhase = .idle {
+        didSet {
+            guard phase != oldValue else { return }
+            // phase 遷移の背骨ログ。「認識中」固着時に、どこで遷移が止まったかを
+            // Console.app（subsystem:com.mtkg.whisperkun）で時系列に追える。
+            txLog.debug("phase: \(String(describing: oldValue), privacy: .public) -> \(String(describing: self.phase), privacy: .public) gen=\(self.generation, privacy: .public)")
+        }
+    }
 
     /// 文字起こしに使うロケール。
     var locale: Locale
@@ -159,6 +166,14 @@ final class TranscriptionService {
         generation += 1
         guard isRunning else { return String(finalizedText.characters) }
 
+        // どの経路で抜けても必ずリソースを解放し phase を idle に戻す（「認識中」固着の保険）。
+        // 現状 engine.stop()/removeTap は throws ではないが、将来の早期 return / await
+        // キャンセル追加でも復帰を保証するため defer に集約する。
+        defer {
+            cleanup()
+            phase = .idle
+        }
+
         // IO スレッドを先に静止させてから tap を外す。リアルタイムスレッド稼働中に
         // tap を解放すると、CoreAudio の IO スレッドが解放済み IOProc を呼んで
         // クラッシュ（EXC_BAD_ACCESS at 0x0）することがあるため、順序が重要。
@@ -173,11 +188,7 @@ final class TranscriptionService {
 
         // 正常確定なら確定テキスト、タイムアウト時は暫定込みの表示テキストで代替する。
         let finalized = String(finalizedText.characters)
-        let result = finished ? finalized : (finalized.isEmpty ? liveText : finalized)
-
-        cleanup()
-        phase = .idle
-        return result
+        return finished ? finalized : (finalized.isEmpty ? liveText : finalized)
     }
 
     /// 確定処理（finalize＋結果購読の完了）を待つ。期限内に終われば true、超過なら false。

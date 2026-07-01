@@ -1,5 +1,9 @@
 import AppKit
 import CoreGraphics
+import OSLog
+import whisperkunCore
+
+private let hkLog = Logger(subsystem: "com.mtkg.whisperkun", category: "hotkey")
 
 /// ホットキーの起動方式。
 enum HotkeyMode: String, CaseIterable, Codable {
@@ -73,6 +77,21 @@ enum HotkeyModifier: String, CaseIterable, Codable {
         switch self {
         case .leftControl, .leftOption, .leftShift, .leftCommand: return true
         default: return false
+        }
+    }
+
+    /// この修飾キーに対応する仮想キーコード（`init?(keyCode:)` の逆写像）。
+    /// `CGEventSource.keyState` で物理押下を問い合わせる際に使う。
+    var keyCode: UInt16 {
+        switch self {
+        case .rightCommand: return 54
+        case .leftCommand: return 55
+        case .leftShift: return 56
+        case .leftOption: return 58
+        case .leftControl: return 59
+        case .rightShift: return 60
+        case .rightOption: return 61
+        case .rightControl: return 62
         }
     }
 
@@ -212,11 +231,18 @@ final class HotkeyService {
     /// 修飾キー実状態を読み直し、押下状態の差分があればハンドラを発火して同期する。
     fileprivate func reconcileModifierState() {
         guard !modifiers.isEmpty else { return }
-        // `CGEventSource.flagsState` は device-dependent ビットを返さないことがあるため、
-        // 左右を畳んだクラスマスクで「今も押されているか」を判定する（固着の確実な解消を優先）。
-        let current = CGEventSource.flagsState(.combinedSessionState).rawValue
-        let classMask = HotkeyModifier.combinedClassMask(modifiers)
-        applyDownState((current & classMask) == classMask)
+        // 各修飾キーの物理 up/down を keyCode ごとに問い合わせる。`CGEventSource.flagsState` の
+        // セッション集約フラグは解放後も「押下中」で幽霊的に張り付くことがあり、そのままだと
+        // reconcile が毎 tick「まだ down」と誤判定して onStop を出せず、「認識中」のまま固着する
+        // （別キーを押すと集約フラグが再評価され復帰する）。物理キー状態なら幽霊に騙されない。
+        let required = Set(modifiers.map(\.keyCode))
+        var keyStates: [UInt16: Bool] = [:]
+        for code in required {
+            keyStates[code] = CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(code))
+        }
+        let isDown = hotkeyIsDown(requiredKeyCodes: required, keyStates: keyStates)
+        hkLog.debug("reconcile: keyStates=\(keyStates, privacy: .public) isDown=\(isDown, privacy: .public) modifierIsDown=\(self.modifierIsDown, privacy: .public)")
+        applyDownState(isDown)
     }
 
     /// 押下状態の遷移を反映し、必要ならハンドラを発火する。
@@ -227,10 +253,12 @@ final class HotkeyService {
         switch mode {
         case .pushToTalk:
             if isDown {
+                hkLog.debug("applyDownState: down -> onStart (ptt)")
                 onStart?()
                 // 押下中は解放取りこぼしに備えて実状態を定期確認する。
                 startReleaseWatch()
             } else {
+                hkLog.debug("applyDownState: up -> onStop (ptt)")
                 stopReleaseWatch()
                 onStop?()
             }
@@ -238,6 +266,7 @@ final class HotkeyService {
             // 押下の立ち上がりでのみトグルする。
             if isDown {
                 toggledOn.toggle()
+                hkLog.debug("applyDownState: toggle -> \(self.toggledOn ? "onStart" : "onStop", privacy: .public)")
                 if toggledOn { onStart?() } else { onStop?() }
             }
         }
@@ -279,6 +308,7 @@ private func hotkeyEventCallback(
 ) -> Unmanaged<CGEvent>? {
     // タップが無効化された場合（タイムアウト等）は再有効化する。
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        hkLog.debug("tap disabled (type=\(type.rawValue, privacy: .public)) -> re-enable & reconcile")
         if let refcon {
             // 生ポインタは region isolation を跨げないため UInt(bitPattern:) で渡す。
             let address = UInt(bitPattern: refcon)
