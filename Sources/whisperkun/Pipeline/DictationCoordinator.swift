@@ -1,7 +1,10 @@
 import AppKit
 import Foundation
 import Observation
+import OSLog
 import whisperkunCore
+
+private let coordLog = Logger(subsystem: "com.mtkg.whisperkun", category: "coordinator")
 
 /// パイプラインが後処理に使うデータ一式（SwiftDataから供給）。
 struct PipelineData: Sendable {
@@ -69,6 +72,7 @@ final class DictationCoordinator {
     /// preparing 中でも止められるよう、開始処理の完了を待たずに stop する
     /// （stop が世代を進めて進行中の開始処理を無効化するため、.listening への遷移は起きない）。
     func cancel() {
+        coordLog.debug("cancel -> stop")
         isActive = false
         isFinishing = false
         Task {
@@ -117,7 +121,11 @@ final class DictationCoordinator {
 
     private func begin() {
         // isActive を同期的に判定。短い発話で begin/end が交錯しても破綻しない。
-        guard !isActive, !isFinishing else { return }
+        guard !isActive, !isFinishing else {
+            coordLog.debug("begin dropped: isActive=\(self.isActive, privacy: .public) isFinishing=\(self.isFinishing, privacy: .public)")
+            return
+        }
+        coordLog.debug("begin")
         isActive = true
 
         // 最新の辞書を取り込む。
@@ -143,7 +151,11 @@ final class DictationCoordinator {
     }
 
     private func end() {
-        guard isActive, !isFinishing else { return }
+        guard isActive, !isFinishing else {
+            coordLog.debug("end dropped: isActive=\(self.isActive, privacy: .public) isFinishing=\(self.isFinishing, privacy: .public)")
+            return
+        }
+        coordLog.debug("end -> stop")
         isActive = false
         isFinishing = true
         Task {
