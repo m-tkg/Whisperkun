@@ -60,7 +60,7 @@ base 必須チェックリストの実装対応（実装済み）:
   `startUpdateCheck(interactive:)` を呼ぶ。
 - **メニューバーの赤バッジ**: 新版があるとアイコン右下に赤丸（最新なら消す）。更新有無は
   `UpdateCoordinator.setAvailableRelease(_:)`（base の `setUpdateAvailable`/`clearUpdateAvailable` 相当）に**集約**し、
-  `onUpdateAvailabilityChanged` クロージャで `AppDelegate` のバッジと同期する（起動時・定期・復帰・手動の全経路が
+  `onUpdateAvailabilityChanged` クロージャで `StatusItemController` のバッジと同期する（起動時・定期・復帰・手動の全経路が
   ここを通る）。バッジは `UI/UpdateBadgeView`（`NSView`+`CALayer` の赤丸・白縁取り）を `statusItem.button` に
   オーバーレイし、**アイコン幅基準で右下に Auto Layout 固定**（`leading = button.leading + (iconWidth - badgeSize)`、
   `bottom = button.bottom`）。「ローカル」併記時（`imagePosition = .imageLeading`）でもアイコングリフ右下に乗る。
@@ -154,6 +154,6 @@ base は `Localization.swift` の `L.string`/`L.format` 方式だが、**whisper
 - 仕様: kuntraykun リポジトリ `docs/kun-integration-protocol.md`、共通方針は `../CLAUDE_base.md`「Kuntraykun 連携」。
 - 管理対象フラグは `UserDefaults`（キー `KuntraykunManaged`）に永続化する。
 - **実アイコンのライブ書き出し（v2）**: `KuntraykunIconExport.export(_:)`（`Sources/whisperkun/App/KuntraykunIconExport.swift`）で、
-  `AppDelegate` がメニューバーアイコンを設定する箇所で現在アイコンを
+  `StatusItemController` がメニューバーアイコンを設定する箇所で現在アイコンを
   `~/Library/Application Support/Kuntraykun/MenuBarIcons/<基底ID>.png` に書き出す（テンプレートは `.template` マーカー併記）。
   kuntraykun はこれを優先して一覧に表示する。赤バッジは別 view なので書き出し対象外。
