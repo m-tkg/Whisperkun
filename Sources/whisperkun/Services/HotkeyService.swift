@@ -1,7 +1,6 @@
 import AppKit
 import CoreGraphics
 import OSLog
-import whisperkunCore
 
 private let hkLog = Logger(subsystem: "com.mtkg.whisperkun", category: "hotkey")
 
@@ -77,21 +76,6 @@ enum HotkeyModifier: String, CaseIterable, Codable {
         switch self {
         case .leftControl, .leftOption, .leftShift, .leftCommand: return true
         default: return false
-        }
-    }
-
-    /// この修飾キーに対応する仮想キーコード（`init?(keyCode:)` の逆写像）。
-    /// `CGEventSource.keyState` で物理押下を問い合わせる際に使う。
-    var keyCode: UInt16 {
-        switch self {
-        case .rightCommand: return 54
-        case .leftCommand: return 55
-        case .leftShift: return 56
-        case .leftOption: return 58
-        case .leftControl: return 59
-        case .rightShift: return 60
-        case .rightOption: return 61
-        case .rightControl: return 62
         }
     }
 
@@ -231,17 +215,17 @@ final class HotkeyService {
     /// 修飾キー実状態を読み直し、押下状態の差分があればハンドラを発火して同期する。
     fileprivate func reconcileModifierState() {
         guard !modifiers.isEmpty else { return }
-        // 各修飾キーの物理 up/down を keyCode ごとに問い合わせる。`CGEventSource.flagsState` の
-        // セッション集約フラグは解放後も「押下中」で幽霊的に張り付くことがあり、そのままだと
-        // reconcile が毎 tick「まだ down」と誤判定して onStop を出せず、「認識中」のまま固着する
-        // （別キーを押すと集約フラグが再評価され復帰する）。物理キー状態なら幽霊に騙されない。
-        let required = Set(modifiers.map(\.keyCode))
-        var keyStates: [UInt16: Bool] = [:]
-        for code in required {
-            keyStates[code] = CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(code))
-        }
-        let isDown = hotkeyIsDown(requiredKeyCodes: required, keyStates: keyStates)
-        hkLog.debug("reconcile: keyStates=\(keyStates, privacy: .public) isDown=\(isDown, privacy: .public) modifierIsDown=\(self.modifierIsDown, privacy: .public)")
+        // `CGEventSource.flagsState` は device-dependent ビットを返さないことがあるため、
+        // 左右を畳んだクラスマスクで「今も押されているか」を判定する（固着の確実な解消を優先）。
+        //
+        // NOTE: 一度 keyState(.combinedSessionState) ベースに切替えたが、PTT で押下継続中にも
+        // 稀に false を返し releaseWatch から onStop を誤発火（喋っている途中でウィンドウが閉じる）
+        // したため flagsState 判定へ戻した。keyState 化を再挑戦する場合は実機で hold 中の
+        // 挙動を必ず検証すること（[[listening-stuck-keystate-regression]]）。
+        let current = CGEventSource.flagsState(.combinedSessionState).rawValue
+        let classMask = HotkeyModifier.combinedClassMask(modifiers)
+        let isDown = (current & classMask) == classMask
+        hkLog.debug("reconcile: flags=\(current, privacy: .public) classMask=\(classMask, privacy: .public) isDown=\(isDown, privacy: .public) modifierIsDown=\(self.modifierIsDown, privacy: .public)")
         applyDownState(isDown)
     }
 
