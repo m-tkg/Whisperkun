@@ -20,21 +20,49 @@ public enum HotkeyModifier: String, CaseIterable, Codable, Sendable {
 
     /// CGEventFlags 内の device-dependent マスク（IOKit の NX_DEVICEL*/R*KEYMASK）。
     public var deviceMask: UInt64 {
-        fatalError("未実装")
+        switch self {
+        case .leftControl: return 0x0000_0001
+        case .leftShift: return 0x0000_0002
+        case .rightShift: return 0x0000_0004
+        case .leftCommand: return 0x0000_0008
+        case .rightCommand: return 0x0000_0010
+        case .leftOption: return 0x0000_0020
+        case .rightOption: return 0x0000_0040
+        case .rightControl: return 0x0000_2000
+        }
     }
 
     /// `flagsChanged` イベントの仮想キーコードから修飾キーを判定する。非修飾キーは nil。
     public init?(keyCode: UInt16) {
-        return nil
+        switch keyCode {
+        case 54: self = .rightCommand
+        case 55: self = .leftCommand
+        case 56: self = .leftShift
+        case 58: self = .leftOption
+        case 59: self = .leftControl
+        case 60: self = .rightShift
+        case 61: self = .rightOption
+        case 62: self = .rightControl
+        default: return nil
+        }
     }
 
     /// 表示順（⌃⌥⇧⌘ の慣習順。同種は左→右）。
     public var sortOrder: Int {
-        fatalError("未実装")
+        switch self {
+        case .leftControl: return 0
+        case .rightControl: return 1
+        case .leftOption: return 2
+        case .rightOption: return 3
+        case .leftShift: return 4
+        case .rightShift: return 5
+        case .leftCommand: return 6
+        case .rightCommand: return 7
+        }
     }
 
     /// 集合の device マスクの論理和。
     public static func combinedMask(_ set: Set<HotkeyModifier>) -> UInt64 {
-        fatalError("未実装")
+        set.reduce(UInt64(0)) { $0 | $1.deviceMask }
     }
 }

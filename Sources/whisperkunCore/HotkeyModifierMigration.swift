@@ -8,6 +8,12 @@ public enum HotkeyModifierMigration {
     ///   - legacySingleRawValue: 旧キー（単一修飾キー）の生値。無ければ nil。
     /// - Returns: 新キーがあればそれを採用（不正な生値は無視）。無ければ旧キーから移行。どちらも無ければ空。
     public static func resolve(newRawValues: [String]?, legacySingleRawValue: String?) -> Set<HotkeyModifier> {
-        fatalError("未実装")
+        if let newRawValues {
+            return Set(newRawValues.compactMap(HotkeyModifier.init(rawValue:)))
+        }
+        if let single = legacySingleRawValue.flatMap(HotkeyModifier.init(rawValue:)) {
+            return [single]
+        }
+        return []
     }
 }
